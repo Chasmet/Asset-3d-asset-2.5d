@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="purple_primary">#7B1CFF</color>
+    <color name="purple_dark">#4B0FB0</color>
+    <color name="background_dark">#0F0B1A</color>
+    <color name="card_dark">#1E1630</color>
+    <color name="hero_overlay">#52000000</color>
+</resources>

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Asset 3D / 2.5D</string>
+    <string name="catalog_title">Catalogue d’assets</string>
+    <string name="catalog_subtitle">Assets libres de droit pour tes projets</string>
+    <string name="creator_format">Créateur : %1$s • %2$s</string>
+    <string name="summary_3d">%1$d assets 3D libres de droit sélectionnés.</string>
+    <string name="summary_25d">%1$d assets 2.5D libres de droit sélectionnés.</string>
+    <string name="summary_animated">%1$d assets 3D animés libres de droit sélectionnés.</string>
+    <string name="license_button">Licence</string>
+    <string name="open_button">Ouvrir</string>
+    <string name="no_browser">Aucun navigateur disponible.</string>
+    <string name="interface_image_description">Interface Albator du catalogue</string>
+    <string name="asset_preview_description">Aperçu de l’asset</string>
+</resources>

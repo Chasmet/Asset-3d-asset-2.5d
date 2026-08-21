@@ -6,3 +6,5 @@ local.properties
 .DS_Store
 /build/
 app/build/
+mcp/node_modules/
+mcp/dist/

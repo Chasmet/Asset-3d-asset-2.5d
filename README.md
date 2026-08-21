@@ -35,3 +35,25 @@ app/build/outputs/apk/debug/app-debug.apk
 ```
 
 GitHub Actions compile aussi automatiquement l’APK et le publie dans les Artifacts.
+
+## MCP du projet
+
+Le dépôt contient maintenant un serveur **Model Context Protocol** dédié dans `mcp/`.
+
+Il permet à un assistant compatible MCP de :
+
+- inspecter la structure du projet ;
+- lire et modifier les fichiers texte du dépôt ;
+- lister et rechercher les assets 3D, 2.5D et 3D animés ;
+- valider les licences, URL, doublons et images de prévisualisation ;
+- lancer des tâches Gradle Android contrôlées.
+
+Installation :
+
+```bash
+cd mcp
+npm install
+npm run build
+```
+
+La configuration de lancement est disponible dans `.mcp.json`. Voir `mcp/README.md` pour les détails.

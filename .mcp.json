@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "asset-3d-25d": {
+      "command": "npm",
+      "args": ["--prefix", "mcp", "start"],
+      "env": {
+        "ASSET_PROJECT_ROOT": "."
+      }
+    }
+  }
+}

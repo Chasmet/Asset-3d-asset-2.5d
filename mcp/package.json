@@ -11,7 +11,7 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/index.js",
-    "start:http": "node dist/http.js"
+    "start:http": "node dist/mux.js"
   },
   "dependencies": {
     "@modelcontextprotocol/node": "2.0.0",

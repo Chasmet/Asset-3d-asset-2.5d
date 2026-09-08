@@ -17,7 +17,7 @@ interface Command {
   deviceId: string;
   type: string;
   payload: Record<string, unknown>;
-  status: "queued" | "delivered" | "completed" | "failed";
+  status: "queued" | "delivered" | "running" | "completed" | "failed";
   createdAt: number;
   deliveredAt?: number;
   completedAt?: number;
@@ -124,7 +124,7 @@ const tools = [
   },
   {
     name: "superbot_submit_publication",
-    description: "Envoie une mission de publication sociale à Super Bot Android.",
+    description: "Envoie une mission de publication sociale à Super Bot Android. Une mission reste running tant que le réseau social n'a pas confirmé la publication ou la programmation.",
     inputSchema: {
       type: "object",
       required: ["platform", "scheduledAt"],
@@ -141,7 +141,7 @@ const tools = [
   },
   {
     name: "superbot_get_task_status",
-    description: "Retourne l'état d'une commande envoyée au téléphone.",
+    description: "Retourne l'état réel d'une mission. completed signifie confirmation finale du réseau social, jamais simple mise en file ou ouverture Android.",
     inputSchema: { type: "object", required: ["commandId"], properties: { commandId: { type: "string" } } },
   },
   {
@@ -207,7 +207,7 @@ async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<voi
     writeJson(res, 200, rpcResult(id, {
       protocolVersion: msg.params?.protocolVersion || "2025-11-25",
       capabilities: { tools: {} },
-      serverInfo: { name: "super-bot-mcp", version: "1.0.0" },
+      serverInfo: { name: "super-bot-mcp", version: "1.1.0" },
     }));
     return;
   }
@@ -279,14 +279,34 @@ export async function handleSuperBotRoute(req: IncomingMessage, res: ServerRespo
       return true;
     }
     const b = await readJson(req);
-    c.status = b.ok === false ? "failed" : "completed";
+    const phase = String(b.phase || "").toLowerCase();
+    const message = String(b.message || "").toLowerCase();
+    const terminalFailure = b.ok === false || phase === "failed";
+    const terminalSuccess = phase === "completed"
+      || message.startsWith("scheduled_confirmed")
+      || message.startsWith("publication_completed")
+      || message.startsWith("published_confirmed");
+
+    if (terminalFailure) {
+      c.status = "failed";
+      c.completedAt = Date.now();
+    } else if (terminalSuccess) {
+      c.status = "completed";
+      c.completedAt = Date.now();
+    } else if (c.type === "submit_publication") {
+      c.status = "running";
+      delete c.completedAt;
+    } else {
+      c.status = "completed";
+      c.completedAt = Date.now();
+    }
+
     c.result = b;
-    c.completedAt = Date.now();
     const d = device(c.deviceId);
     d.lastSeen = Date.now();
     d.online = true;
-    d.lastResult = { commandId: c.id, ...b };
-    writeJson(res, 200, { ok: true });
+    d.lastResult = { commandId: c.id, status: c.status, ...b };
+    writeJson(res, 200, { ok: true, status: c.status });
     return true;
   }
   writeJson(res, 404, { error: "not_found" });

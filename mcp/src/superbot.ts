@@ -17,7 +17,7 @@ interface Command {
   deviceId: string;
   type: string;
   payload: Record<string, unknown>;
-  status: "queued" | "delivered" | "completed" | "failed";
+  status: "queued" | "delivered" | "running" | "paused" | "completed" | "failed" | "cancelled";
   createdAt: number;
   deliveredAt?: number;
   completedAt?: number;
@@ -124,7 +124,7 @@ const tools = [
   },
   {
     name: "superbot_submit_publication",
-    description: "Envoie une mission de publication sociale à Super Bot Android.",
+    description: "Programme une vidéo. Une seule mission active par téléphone. queued/delivered/running ne sont pas une réussite. Attendre completed avec confirmation TikTok et retour au menu avant la suivante.",
     inputSchema: {
       type: "object",
       required: ["platform", "scheduledAt"],
@@ -151,6 +151,30 @@ const tools = [
   },
 ];
 
+function takeCommands(deviceId: string): Command[] {
+  const pending=queue(deviceId),out: Command[]=[];
+  let busy=[...commands.values()].some(c=>c.deviceId===deviceId&&c.type==="submit_publication"&&!["queued","completed"].includes(c.status));
+  // An old/local Android mission is also a lock even if the server restarted.
+  if(device(deviceId).activeTask)busy=true;
+  for(let i=0;i<pending.length&&out.length<8;){
+    const c=pending[i];
+    if(c.type==="submit_publication"&&busy){i++;continue;}
+    if(c.type==="submit_publication")busy=true;
+    pending.splice(i,1);c.status="delivered";c.deliveredAt=Date.now();out.push(c);
+  }
+  return out;
+}
+
+function applyResult(c: Command,b: Record<string,any>): void {
+  if(["completed","failed","cancelled"].includes(c.status))return;
+  if(c.type!=="submit_publication")c.status=b.ok===false?"failed":"completed";
+  else if(b.ok===false)c.status=b.status==="cancelled"?"cancelled":"failed";
+  else if(b.status==="completed"&&b.taskId===c.id&&b.confirmation==="tiktok_schedule_confirmed"&&b.menuReturned===true)c.status="completed";
+  else c.status=b.status==="paused"?"paused":"running";
+  c.result=b;
+  if(["completed","failed","cancelled"].includes(c.status))c.completedAt=Date.now();
+}
+
 function callTool(name: string, args: Record<string, any> = {}) {
   const deviceId = String(args.deviceId || "superbot-phone");
   const current = device(deviceId);
@@ -160,6 +184,7 @@ function callTool(name: string, args: Record<string, any> = {}) {
       online: Date.now() - current.lastSeen < 15_000,
       lastSeen: current.lastSeen,
       packageName: current.packageName,
+      protocolVersion: 2,
       activeTask: current.activeTask,
       lastResult: current.lastResult,
     });
@@ -171,6 +196,7 @@ function callTool(name: string, args: Record<string, any> = {}) {
       packageName: current.packageName,
       screenText: current.screenText,
       nodes: current.nodes,
+      protocolVersion: 2,
       activeTask: current.activeTask,
     });
   }
@@ -188,6 +214,11 @@ function callTool(name: string, args: Record<string, any> = {}) {
   };
   const type = mapping[name];
   if (!type) return { isError: true, content: [{ type: "text", text: `Outil inconnu: ${name}` }] };
+  if(type==="submit_publication"){
+    if(!Number.isSafeInteger(args.scheduledAt)||args.scheduledAt<=Date.now()+60000)
+      return {isError:true,...textResult({error:"scheduled_time_expired_or_invalid",unit:"epoch_milliseconds"})};
+    if(!String(args.mediaUri||"").trim())return {isError:true,...textResult({error:"mediaUri_required"})};
+  }
   const c = enqueue(deviceId, type, args);
   return textResult({ queued: true, commandId: c.id, deviceId });
 }
@@ -207,7 +238,7 @@ async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<voi
     writeJson(res, 200, rpcResult(id, {
       protocolVersion: msg.params?.protocolVersion || "2025-11-25",
       capabilities: { tools: {} },
-      serverInfo: { name: "super-bot-mcp", version: "1.0.0" },
+      serverInfo: { name: "super-bot-mcp", version: "1.1.0" },
     }));
     return;
   }
@@ -237,7 +268,7 @@ export async function handleSuperBotRoute(req: IncomingMessage, res: ServerRespo
     return true;
   }
   if (req.method === "GET" && pathname === "/superbot/health") {
-    writeJson(res, 200, { ok: true, service: "super-bot-mcp", mcpPath: "/superbot/mcp", now: Date.now() });
+    writeJson(res, 200, { ok: true, service: "super-bot-mcp", protocolVersion: 2, version: "1.1.0", mcpPath: "/superbot/mcp", now: Date.now() });
     return true;
   }
   if (req.method === "POST" && pathname === "/superbot/mcp") {
@@ -260,18 +291,14 @@ export async function handleSuperBotRoute(req: IncomingMessage, res: ServerRespo
   }
   if (req.method === "GET" && pathname === "/superbot/device/commands") {
     const deviceId = url.searchParams.get("deviceId") || "superbot-phone";
-    const out = queue(deviceId).splice(0, 8).map((c) => {
-      c.status = "delivered";
-      c.deliveredAt = Date.now();
-      return c;
-    });
+    const out = takeCommands(deviceId);
     const d = device(deviceId);
     d.lastSeen = Date.now();
     d.online = true;
     writeJson(res, 200, { commands: out });
     return true;
   }
-  const match = pathname.match(/^\/superbot\/device\/commands\/([^/]+)\/result$/);
+  const match = pathname.match(/^\/superbot\/device\/commands\/([^/]+)\/(result|progress)$/);
   if (match && req.method === "POST") {
     const c = commands.get(match[1]);
     if (!c) {
@@ -279,9 +306,11 @@ export async function handleSuperBotRoute(req: IncomingMessage, res: ServerRespo
       return true;
     }
     const b = await readJson(req);
-    c.status = b.ok === false ? "failed" : "completed";
-    c.result = b;
-    c.completedAt = Date.now();
+    if(match[2]==="progress"){
+      if(!["completed","failed","cancelled"].includes(c.status)){
+        c.status=b.status==="paused"?"paused":"running";c.result=b;
+      }
+    }else applyResult(c,b);
     const d = device(c.deviceId);
     d.lastSeen = Date.now();
     d.online = true;

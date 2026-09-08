@@ -33,3 +33,6 @@ jobs:
 
       - name: Build MCP server
         run: npm run --prefix mcp build
+
+      - name: Test publication lifecycle
+        run: npm run --prefix mcp test

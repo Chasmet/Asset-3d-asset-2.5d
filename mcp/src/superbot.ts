@@ -5,6 +5,8 @@ interface DeviceState {
   deviceId: string;
   online: boolean;
   lastSeen: number;
+  lastScreenAt?: number;
+  awake?: boolean;
   packageName?: string | null;
   screenText?: string;
   nodes?: unknown[];
@@ -20,6 +22,7 @@ interface Command {
   status: "queued" | "delivered" | "running" | "completed" | "failed";
   createdAt: number;
   deliveredAt?: number;
+  attempts?: number;
   completedAt?: number;
   result?: unknown;
 }
@@ -27,6 +30,7 @@ interface Command {
 const devices = new Map<string, DeviceState>();
 const queues = new Map<string, Command[]>();
 const commands = new Map<string, Command>();
+const LEASE_MS = 30_000;
 
 function writeJson(res: ServerResponse, status: number, payload: unknown): void {
   const body = JSON.stringify(payload);
@@ -56,6 +60,7 @@ function device(id = "superbot-phone"): DeviceState {
       deviceId: id,
       online: false,
       lastSeen: 0,
+      lastScreenAt: 0,
       packageName: null,
       screenText: "",
       nodes: [],
@@ -83,6 +88,19 @@ function enqueue(deviceId: string, type: string, payload: Record<string, unknown
   commands.set(command.id, command);
   queue(deviceId).push(command);
   return command;
+}
+
+function deliver(deviceId: string): Command[] {
+  const now = Date.now();
+  const pending = queue(deviceId);
+  const command = pending.find((c) => c.type === "cancel" && c.status === "queued")
+    || pending.find((c) => c.status === "queued" ||
+      (c.status === "delivered" && now - (c.deliveredAt || 0) >= LEASE_MS));
+  if (!command) return [];
+  command.status = "delivered";
+  command.deliveredAt = now;
+  command.attempts = (command.attempts || 0) + 1;
+  return [command];
 }
 
 function textResult(value: unknown) {
@@ -158,6 +176,8 @@ function callTool(name: string, args: Record<string, any> = {}) {
     return textResult({
       deviceId,
       online: Date.now() - current.lastSeen < 15_000,
+      controlReady: Date.now() - (current.lastScreenAt || 0) < 15_000 && current.awake === true,
+      lastScreenAt: current.lastScreenAt || 0,
       lastSeen: current.lastSeen,
       packageName: current.packageName,
       activeTask: current.activeTask,
@@ -176,6 +196,17 @@ function callTool(name: string, args: Record<string, any> = {}) {
   }
   if (name === "superbot_get_task_status") return textResult(commands.get(String(args.commandId)) || { error: "command_not_found" });
   if (name === "superbot_cancel_task") {
+    const target = commands.get(String(args.commandId || ""));
+    if (target && target.deviceId !== deviceId) return textResult({ error: "wrong_device" });
+    if (target && target.status === "queued") {
+      target.status = "failed";
+      target.result = { ok: false, phase: "failed", message: "cancelled_before_delivery" };
+      target.completedAt = Date.now();
+      const waiting = queue(deviceId);
+      const index = waiting.indexOf(target);
+      if (index >= 0) waiting.splice(index, 1);
+      return textResult({ cancelled: true, commandId: target.id });
+    }
     const c = enqueue(deviceId, "cancel", { commandId: args.commandId || null });
     return textResult({ queued: true, commandId: c.id, deviceId });
   }
@@ -189,7 +220,8 @@ function callTool(name: string, args: Record<string, any> = {}) {
   const type = mapping[name];
   if (!type) return { isError: true, content: [{ type: "text", text: `Outil inconnu: ${name}` }] };
   const c = enqueue(deviceId, type, args);
-  return textResult({ queued: true, commandId: c.id, deviceId });
+  return textResult({ queued: true, commandId: c.id, deviceId,
+    controlReady: Date.now() - (current.lastScreenAt || 0) < 15_000 && current.awake === true });
 }
 
 function rpcResult(id: unknown, result: unknown) {
@@ -254,17 +286,13 @@ export async function handleSuperBotRoute(req: IncomingMessage, res: ServerRespo
   if (req.method === "POST" && pathname === "/superbot/device/state") {
     const b = await readJson(req);
     const d = device(String(b.deviceId || "superbot-phone"));
-    Object.assign(d, b, { online: true, lastSeen: Date.now() });
+    Object.assign(d, b, { online: true, lastSeen: Date.now(), lastScreenAt: Date.now() });
     writeJson(res, 200, { ok: true });
     return true;
   }
   if (req.method === "GET" && pathname === "/superbot/device/commands") {
     const deviceId = url.searchParams.get("deviceId") || "superbot-phone";
-    const out = queue(deviceId).splice(0, 8).map((c) => {
-      c.status = "delivered";
-      c.deliveredAt = Date.now();
-      return c;
-    });
+    const out = deliver(deviceId);
     const d = device(deviceId);
     d.lastSeen = Date.now();
     d.online = true;
@@ -276,6 +304,10 @@ export async function handleSuperBotRoute(req: IncomingMessage, res: ServerRespo
     const c = commands.get(match[1]);
     if (!c) {
       writeJson(res, 404, { error: "command_not_found" });
+      return true;
+    }
+    if (c.status === "completed" || c.status === "failed") {
+      writeJson(res, 200, { ok: true, status: c.status });
       return true;
     }
     const b = await readJson(req);
@@ -302,6 +334,11 @@ export async function handleSuperBotRoute(req: IncomingMessage, res: ServerRespo
     }
 
     c.result = b;
+    if (c.status === "completed" || c.status === "failed") {
+      const pending = queue(c.deviceId);
+      const index = pending.indexOf(c);
+      if (index >= 0) pending.splice(index, 1);
+    }
     const d = device(c.deviceId);
     d.lastSeen = Date.now();
     d.online = true;
